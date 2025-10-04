@@ -1,11 +1,11 @@
 """
-PostgreSQL to ClickHouse Sync Service
-این سرویس به صورت خودکار داده‌ها رو از PostgreSQL به ClickHouse منتقل میکنه
+PostgreSQL to ClickHouse Sync Service - FIXED datetime conversion
 """
 
 import os
 import time
 import logging
+import traceback
 from datetime import datetime
 from typing import List, Dict, Any
 
@@ -68,12 +68,13 @@ class PostgresClickHouseSync:
         try:
             self.ch_client = clickhouse_connect.get_client(
                 host=self.ch_host,
-                port=8123,  # HTTP port
+                port=self.ch_port,
                 username=self.ch_user,
                 password=self.ch_password,
                 database=self.ch_database
             )
-            logger.info("✅ Connected to ClickHouse successfully")
+            result = self.ch_client.command('SELECT 1')
+            logger.info(f"✅ Connected to ClickHouse successfully")
         except Exception as e:
             logger.error(f"❌ Failed to connect to ClickHouse: {e}")
             raise
@@ -103,10 +104,138 @@ class PostgresClickHouseSync:
             return [dict(record) for record in records]
         
         except Exception as e:
-            logger.error(f"Error fetching records from {table_name}: {e}")
+            logger.error(f"❌ Error fetching records from {table_name}: {e}")
             return []
         finally:
             cursor.close()
+    
+    def sync_users(self):
+        """Sync users table"""
+        table_name = 'users'
+        logger.info(f"👥 Syncing {table_name}...")
+        
+        last_sync = self.last_sync_times.get(table_name)
+        records = self.fetch_new_records(table_name, last_sync)
+        
+        if not records:
+            logger.info(f"  ℹ️  No new records in {table_name}")
+            return
+        
+        logger.info(f"  📦 Found {len(records)} new records")
+        
+        transformed_records = []
+        for record in records:
+            transformed = {
+                'user_id': record['user_id'],
+                'username': record['username'],
+                'email': record['email'],
+                'full_name': record['full_name'] or '',
+                'country_code': record['country_code'] or 'XX',
+                'kyc_level': record['kyc_level'],
+                'is_verified': 1 if record['is_verified'] else 0,
+                'risk_score': float(record['risk_score']),
+                'registration_date': record['registration_date'],  # Already datetime
+                'last_login': record['last_login'],  # Already datetime or None
+                'created_at': record['created_at'],  # Already datetime
+                'updated_at': record['updated_at']  # Already datetime
+            }
+            transformed_records.append(transformed)
+        
+        try:
+            self.ch_client.insert(
+                f'{self.ch_database}.{table_name}',
+                transformed_records,
+                column_names=list(transformed_records[0].keys())
+            )
+            logger.info(f"  ✅ Inserted {len(transformed_records)} records into {table_name}")
+            self.last_sync_times[table_name] = max(r['updated_at'] for r in records)
+        
+        except Exception as e:
+            logger.error(f"  ❌ Failed to insert into {table_name}: {str(e)}")
+            logger.error(f"  Full error:\n{traceback.format_exc()}")
+    
+    def sync_wallets(self):
+        """Sync wallets table"""
+        table_name = 'wallets'
+        logger.info(f"💼 Syncing {table_name}...")
+        
+        last_sync = self.last_sync_times.get(table_name)
+        records = self.fetch_new_records(table_name, last_sync)
+        
+        if not records:
+            logger.info(f"  ℹ️  No new records in {table_name}")
+            return
+        
+        logger.info(f"  📦 Found {len(records)} new records")
+        
+        transformed_records = []
+        for record in records:
+            transformed = {
+                'wallet_id': record['wallet_id'],
+                'user_id': record['user_id'],
+                'wallet_address': record['wallet_address'],
+                'wallet_type': record['wallet_type'],
+                'currency': record['currency'],
+                'balance': float(record['balance']),
+                'is_active': 1 if record['is_active'] else 0,
+                'created_at': record['created_at'],  # Already datetime
+                'updated_at': record['updated_at']  # Already datetime
+            }
+            transformed_records.append(transformed)
+        
+        try:
+            self.ch_client.insert(
+                f'{self.ch_database}.{table_name}',
+                transformed_records,
+                column_names=list(transformed_records[0].keys())
+            )
+            logger.info(f"  ✅ Inserted {len(transformed_records)} records into {table_name}")
+            self.last_sync_times[table_name] = max(r['updated_at'] for r in records)
+        
+        except Exception as e:
+            logger.error(f"  ❌ Failed to insert into {table_name}: {str(e)}")
+            logger.error(f"  Full error:\n{traceback.format_exc()}")
+    
+    def sync_merchants(self):
+        """Sync merchants table"""
+        table_name = 'merchants'
+        logger.info(f"🏪 Syncing {table_name}...")
+        
+        cursor = self.pg_conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute(f"SELECT * FROM {table_name}")
+        records = cursor.fetchall()
+        cursor.close()
+        
+        if not records:
+            logger.info(f"  ℹ️  No records in {table_name}")
+            return
+        
+        logger.info(f"  📦 Found {len(records)} records")
+        
+        transformed_records = []
+        for record in records:
+            transformed = {
+                'merchant_id': record['merchant_id'],
+                'merchant_name': record['merchant_name'],
+                'merchant_category': record['merchant_category'] or '',
+                'country_code': record['country_code'] or 'XX',
+                'risk_level': record['risk_level'],
+                'is_active': 1 if record['is_active'] else 0,
+                'created_at': record['created_at']  # Already datetime
+            }
+            transformed_records.append(transformed)
+        
+        try:
+            self.ch_client.insert(
+                f'{self.ch_database}.{table_name}',
+                transformed_records,
+                column_names=list(transformed_records[0].keys())
+            )
+            logger.info(f"  ✅ Inserted {len(transformed_records)} records into {table_name}")
+        
+        except Exception as e:
+            logger.error(f"  ❌ Failed to insert into {table_name}: {str(e)}")
+            logger.error(f"  Full error:\n{traceback.format_exc()}")
     
     def sync_transactions(self):
         """Sync transactions table"""
@@ -117,10 +246,11 @@ class PostgresClickHouseSync:
         records = self.fetch_new_records(table_name, last_sync)
         
         if not records:
-            logger.info(f"  No new records in {table_name}")
+            logger.info(f"  ℹ️  No new records in {table_name}")
             return
         
-        # Transform records for ClickHouse
+        logger.info(f"  📦 Found {len(records)} new records")
+        
         transformed_records = []
         for record in records:
             transformed = {
@@ -145,13 +275,12 @@ class PostgresClickHouseSync:
                 'ip_address': str(record['ip_address']) if record['ip_address'] else '0.0.0.0',
                 'device_id': record['device_id'] or '',
                 'country_code': record['country_code'] or 'XX',
-                'created_at': record['created_at'],
-                'completed_at': record['completed_at'],
-                'updated_at': record['updated_at']
+                'created_at': record['created_at'],  # Already datetime
+                'completed_at': record['completed_at'],  # Already datetime or None
+                'updated_at': record['updated_at']  # Already datetime
             }
             transformed_records.append(transformed)
         
-        # Insert into ClickHouse
         try:
             self.ch_client.insert(
                 f'{self.ch_database}.{table_name}',
@@ -159,132 +288,11 @@ class PostgresClickHouseSync:
                 column_names=list(transformed_records[0].keys())
             )
             logger.info(f"  ✅ Inserted {len(transformed_records)} records into {table_name}")
-            
-            # Update last sync time
             self.last_sync_times[table_name] = max(r['updated_at'] for r in records)
         
         except Exception as e:
-            import traceback
             logger.error(f"  ❌ Failed to insert into {table_name}: {str(e)}")
-            logger.error(f"  Full error: {traceback.format_exc()}")
-    
-    def sync_users(self):
-        """Sync users table"""
-        table_name = 'users'
-        logger.info(f"👥 Syncing {table_name}...")
-        
-        last_sync = self.last_sync_times.get(table_name)
-        records = self.fetch_new_records(table_name, last_sync)
-        
-        if not records:
-            logger.info(f"  No new records in {table_name}")
-            return
-        
-        transformed_records = []
-        for record in records:
-            transformed = {
-                'user_id': record['user_id'],
-                'username': record['username'],
-                'email': record['email'],
-                'full_name': record['full_name'] or '',
-                'country_code': record['country_code'] or 'XX',
-                'kyc_level': record['kyc_level'],
-                'is_verified': 1 if record['is_verified'] else 0,
-                'risk_score': float(record['risk_score']),
-                'registration_date': record['registration_date'],
-                'last_login': record['last_login'],
-                'created_at': record['created_at'],
-                'updated_at': record['updated_at']
-            }
-            transformed_records.append(transformed)
-        
-        try:
-            self.ch_client.insert(
-                f'{self.ch_database}.{table_name}',
-                transformed_records,
-                column_names=list(transformed_records[0].keys())
-            )
-            logger.info(f"  ✅ Inserted {len(transformed_records)} records into {table_name}")
-            self.last_sync_times[table_name] = max(r['updated_at'] for r in records)
-        
-        except Exception as e:
-            logger.error(f"  ❌ Failed to insert into {table_name}: {e}")
-    
-    def sync_wallets(self):
-        """Sync wallets table"""
-        table_name = 'wallets'
-        logger.info(f"💼 Syncing {table_name}...")
-        
-        last_sync = self.last_sync_times.get(table_name)
-        records = self.fetch_new_records(table_name, last_sync)
-        
-        if not records:
-            logger.info(f"  No new records in {table_name}")
-            return
-        
-        transformed_records = []
-        for record in records:
-            transformed = {
-                'wallet_id': record['wallet_id'],
-                'user_id': record['user_id'],
-                'wallet_address': record['wallet_address'],
-                'wallet_type': record['wallet_type'],
-                'currency': record['currency'],
-                'balance': float(record['balance']),
-                'is_active': 1 if record['is_active'] else 0,
-                'created_at': record['created_at'],
-                'updated_at': record['updated_at']
-            }
-            transformed_records.append(transformed)
-        
-        try:
-            self.ch_client.insert(
-                f'{self.ch_database}.{table_name}',
-                transformed_records,
-                column_names=list(transformed_records[0].keys())
-            )
-            logger.info(f"  ✅ Inserted {len(transformed_records)} records into {table_name}")
-            self.last_sync_times[table_name] = max(r['updated_at'] for r in records)
-        
-        except Exception as e:
-            logger.error(f"  ❌ Failed to insert into {table_name}: {e}")
-    
-    def sync_merchants(self):
-        """Sync merchants table"""
-        table_name = 'merchants'
-        logger.info(f"🏪 Syncing {table_name}...")
-        
-        cursor = self.pg_conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute(f"SELECT * FROM {table_name}")
-        records = cursor.fetchall()
-        cursor.close()
-        
-        if not records:
-            return
-        
-        transformed_records = []
-        for record in records:
-            transformed = {
-                'merchant_id': record['merchant_id'],
-                'merchant_name': record['merchant_name'],
-                'merchant_category': record['merchant_category'] or '',
-                'country_code': record['country_code'] or 'XX',
-                'risk_level': record['risk_level'],
-                'is_active': 1 if record['is_active'] else 0,
-                'created_at': record['created_at']
-            }
-            transformed_records.append(transformed)
-        
-        try:
-            self.ch_client.insert(
-                f'{self.ch_database}.{table_name}',
-                transformed_records,
-                column_names=list(transformed_records[0].keys())
-            )
-            logger.info(f"  ✅ Inserted {len(transformed_records)} records into {table_name}")
-        
-        except Exception as e:
-            logger.error(f"  ❌ Failed to insert into {table_name}: {e}")
+            logger.error(f"  Full error:\n{traceback.format_exc()}")
     
     def sync_alerts(self):
         """Sync alerts table"""
@@ -295,8 +303,10 @@ class PostgresClickHouseSync:
         records = self.fetch_new_records(table_name, last_sync)
         
         if not records:
-            logger.info(f"  No new records in {table_name}")
+            logger.info(f"  ℹ️  No new records in {table_name}")
             return
+        
+        logger.info(f"  📦 Found {len(records)} new records")
         
         transformed_records = []
         for record in records:
@@ -309,8 +319,8 @@ class PostgresClickHouseSync:
                 'description': record['description'] or '',
                 'status': record['status'],
                 'assigned_to': record['assigned_to'],
-                'created_at': record['created_at'],
-                'resolved_at': record['resolved_at']
+                'created_at': record['created_at'],  # Already datetime
+                'resolved_at': record['resolved_at']  # Already datetime or None
             }
             transformed_records.append(transformed)
         
@@ -324,7 +334,8 @@ class PostgresClickHouseSync:
             self.last_sync_times[table_name] = max(r['created_at'] for r in records)
         
         except Exception as e:
-            logger.error(f"  ❌ Failed to insert into {table_name}: {e}")
+            logger.error(f"  ❌ Failed to insert into {table_name}: {str(e)}")
+            logger.error(f"  Full error:\n{traceback.format_exc()}")
     
     def run_sync_cycle(self):
         """Run one complete sync cycle"""
@@ -333,30 +344,28 @@ class PostgresClickHouseSync:
         logger.info("=" * 60)
         
         try:
-            # Sync all tables
             self.sync_users()
             self.sync_wallets()
             self.sync_merchants()
             self.sync_transactions()
             self.sync_alerts()
             
-            logger.info("✅ Sync cycle completed successfully")
+            logger.info("✅ Sync cycle completed")
         
         except Exception as e:
             logger.error(f"❌ Sync cycle failed: {e}")
+            logger.error(f"Full error: {traceback.format_exc()}")
     
     def start(self):
         """Start continuous sync process"""
         logger.info("🚀 Starting PostgreSQL to ClickHouse sync service...")
         
-        # Initial connections
         self.connect_postgres()
         self.connect_clickhouse()
         
         logger.info(f"⏰ Sync interval: {self.sync_interval} seconds")
         logger.info(f"📦 Batch size: {self.batch_size}")
         
-        # Continuous sync loop
         while True:
             try:
                 self.run_sync_cycle()
@@ -368,9 +377,9 @@ class PostgresClickHouseSync:
             
             except Exception as e:
                 logger.error(f"❌ Unexpected error: {e}")
+                logger.error(f"Full error: {traceback.format_exc()}")
                 time.sleep(self.sync_interval)
         
-        # Cleanup
         if self.pg_conn:
             self.pg_conn.close()
         if self.ch_client:

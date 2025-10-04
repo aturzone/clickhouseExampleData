@@ -110,7 +110,7 @@ services:
       
       # ClickHouse Target
       CH_HOST: clickhouse
-      CH_PORT: 9000
+      CH_PORT: 8123
       CH_DATABASE: crypto_analytics
       CH_USER: analytics_user
       CH_PASSWORD: ClickHouse2024!
