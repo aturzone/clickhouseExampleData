@@ -1,5 +1,5 @@
 """
-PostgreSQL to ClickHouse Sync Service - FIXED datetime conversion
+PostgreSQL to ClickHouse Sync Service - FIXED insert method with tuples
 """
 
 import os
@@ -109,6 +109,34 @@ class PostgresClickHouseSync:
         finally:
             cursor.close()
     
+    def insert_to_clickhouse(self, table_name: str, records: List[Dict], columns: List[str]):
+        """
+        Insert records to ClickHouse using list of tuples
+        """
+        if not records:
+            return
+        
+        # Convert list of dicts to list of tuples
+        # [{col1: val1, col2: val2}, {col1: val3, col2: val4}]
+        # becomes: [(val1, val2), (val3, val4)]
+        
+        data_rows = []
+        for record in records:
+            row = tuple(record[col] for col in columns)
+            data_rows.append(row)
+        
+        try:
+            self.ch_client.insert(
+                f'{self.ch_database}.{table_name}',
+                data_rows,
+                column_names=columns
+            )
+            logger.info(f"  ✅ Inserted {len(records)} records into {table_name}")
+        except Exception as e:
+            logger.error(f"  ❌ Failed to insert into {table_name}: {str(e)}")
+            logger.error(f"  Full error:\n{traceback.format_exc()}")
+            raise
+    
     def sync_users(self):
         """Sync users table"""
         table_name = 'users'
@@ -134,25 +162,16 @@ class PostgresClickHouseSync:
                 'kyc_level': record['kyc_level'],
                 'is_verified': 1 if record['is_verified'] else 0,
                 'risk_score': float(record['risk_score']),
-                'registration_date': record['registration_date'],  # Already datetime
-                'last_login': record['last_login'],  # Already datetime or None
-                'created_at': record['created_at'],  # Already datetime
-                'updated_at': record['updated_at']  # Already datetime
+                'registration_date': record['registration_date'],
+                'last_login': record['last_login'],
+                'created_at': record['created_at'],
+                'updated_at': record['updated_at']
             }
             transformed_records.append(transformed)
         
-        try:
-            self.ch_client.insert(
-                f'{self.ch_database}.{table_name}',
-                transformed_records,
-                column_names=list(transformed_records[0].keys())
-            )
-            logger.info(f"  ✅ Inserted {len(transformed_records)} records into {table_name}")
-            self.last_sync_times[table_name] = max(r['updated_at'] for r in records)
-        
-        except Exception as e:
-            logger.error(f"  ❌ Failed to insert into {table_name}: {str(e)}")
-            logger.error(f"  Full error:\n{traceback.format_exc()}")
+        columns = list(transformed_records[0].keys())
+        self.insert_to_clickhouse(table_name, transformed_records, columns)
+        self.last_sync_times[table_name] = max(r['updated_at'] for r in records)
     
     def sync_wallets(self):
         """Sync wallets table"""
@@ -178,23 +197,14 @@ class PostgresClickHouseSync:
                 'currency': record['currency'],
                 'balance': float(record['balance']),
                 'is_active': 1 if record['is_active'] else 0,
-                'created_at': record['created_at'],  # Already datetime
-                'updated_at': record['updated_at']  # Already datetime
+                'created_at': record['created_at'],
+                'updated_at': record['updated_at']
             }
             transformed_records.append(transformed)
         
-        try:
-            self.ch_client.insert(
-                f'{self.ch_database}.{table_name}',
-                transformed_records,
-                column_names=list(transformed_records[0].keys())
-            )
-            logger.info(f"  ✅ Inserted {len(transformed_records)} records into {table_name}")
-            self.last_sync_times[table_name] = max(r['updated_at'] for r in records)
-        
-        except Exception as e:
-            logger.error(f"  ❌ Failed to insert into {table_name}: {str(e)}")
-            logger.error(f"  Full error:\n{traceback.format_exc()}")
+        columns = list(transformed_records[0].keys())
+        self.insert_to_clickhouse(table_name, transformed_records, columns)
+        self.last_sync_times[table_name] = max(r['updated_at'] for r in records)
     
     def sync_merchants(self):
         """Sync merchants table"""
@@ -221,26 +231,17 @@ class PostgresClickHouseSync:
                 'country_code': record['country_code'] or 'XX',
                 'risk_level': record['risk_level'],
                 'is_active': 1 if record['is_active'] else 0,
-                'created_at': record['created_at']  # Already datetime
+                'created_at': record['created_at']
             }
             transformed_records.append(transformed)
         
-        try:
-            self.ch_client.insert(
-                f'{self.ch_database}.{table_name}',
-                transformed_records,
-                column_names=list(transformed_records[0].keys())
-            )
-            logger.info(f"  ✅ Inserted {len(transformed_records)} records into {table_name}")
-        
-        except Exception as e:
-            logger.error(f"  ❌ Failed to insert into {table_name}: {str(e)}")
-            logger.error(f"  Full error:\n{traceback.format_exc()}")
+        columns = list(transformed_records[0].keys())
+        self.insert_to_clickhouse(table_name, transformed_records, columns)
     
     def sync_transactions(self):
         """Sync transactions table"""
         table_name = 'transactions'
-        logger.info(f"📊 Syncing {table_name}...")
+        logger.info(f"�� Syncing {table_name}...")
         
         last_sync = self.last_sync_times.get(table_name)
         records = self.fetch_new_records(table_name, last_sync)
@@ -275,24 +276,15 @@ class PostgresClickHouseSync:
                 'ip_address': str(record['ip_address']) if record['ip_address'] else '0.0.0.0',
                 'device_id': record['device_id'] or '',
                 'country_code': record['country_code'] or 'XX',
-                'created_at': record['created_at'],  # Already datetime
-                'completed_at': record['completed_at'],  # Already datetime or None
-                'updated_at': record['updated_at']  # Already datetime
+                'created_at': record['created_at'],
+                'completed_at': record['completed_at'],
+                'updated_at': record['updated_at']
             }
             transformed_records.append(transformed)
         
-        try:
-            self.ch_client.insert(
-                f'{self.ch_database}.{table_name}',
-                transformed_records,
-                column_names=list(transformed_records[0].keys())
-            )
-            logger.info(f"  ✅ Inserted {len(transformed_records)} records into {table_name}")
-            self.last_sync_times[table_name] = max(r['updated_at'] for r in records)
-        
-        except Exception as e:
-            logger.error(f"  ❌ Failed to insert into {table_name}: {str(e)}")
-            logger.error(f"  Full error:\n{traceback.format_exc()}")
+        columns = list(transformed_records[0].keys())
+        self.insert_to_clickhouse(table_name, transformed_records, columns)
+        self.last_sync_times[table_name] = max(r['updated_at'] for r in records)
     
     def sync_alerts(self):
         """Sync alerts table"""
@@ -319,23 +311,14 @@ class PostgresClickHouseSync:
                 'description': record['description'] or '',
                 'status': record['status'],
                 'assigned_to': record['assigned_to'],
-                'created_at': record['created_at'],  # Already datetime
-                'resolved_at': record['resolved_at']  # Already datetime or None
+                'created_at': record['created_at'],
+                'resolved_at': record['resolved_at']
             }
             transformed_records.append(transformed)
         
-        try:
-            self.ch_client.insert(
-                f'{self.ch_database}.{table_name}',
-                transformed_records,
-                column_names=list(transformed_records[0].keys())
-            )
-            logger.info(f"  ✅ Inserted {len(transformed_records)} records into {table_name}")
-            self.last_sync_times[table_name] = max(r['created_at'] for r in records)
-        
-        except Exception as e:
-            logger.error(f"  ❌ Failed to insert into {table_name}: {str(e)}")
-            logger.error(f"  Full error:\n{traceback.format_exc()}")
+        columns = list(transformed_records[0].keys())
+        self.insert_to_clickhouse(table_name, transformed_records, columns)
+        self.last_sync_times[table_name] = max(r['created_at'] for r in records)
     
     def run_sync_cycle(self):
         """Run one complete sync cycle"""
