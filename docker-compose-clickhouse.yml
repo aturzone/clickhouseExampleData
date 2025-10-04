@@ -1,0 +1,142 @@
+# docker-compose-clickhouse.yml
+# Setup for PostgreSQL (transaction source) + ClickHouse (analytics)
+# docker-compose-clickhouse.yml - FIXED VERSION
+# Remove version as it's obsolete in newer Docker Compose
+
+services:
+  # ================================================================
+  # PostgreSQL - Source Database (Transactional)
+  # ================================================================
+  postgres-source:
+    image: postgres:15
+    container_name: crypto_exchange_db
+    environment:
+      POSTGRES_USER: exchange_admin
+      POSTGRES_PASSWORD: Exchange2024Secure!
+      POSTGRES_DB: crypto_exchange
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_exchange_data:/var/lib/postgresql/data
+      - ./sql/init-source-db.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./sql/seed-data.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "exchange_admin", "-d", "crypto_exchange"]
+      interval: 10s
+      retries: 5
+      start_period: 10s
+    restart: always
+    networks:
+      - crypto_analytics_network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # ================================================================
+  # ClickHouse - Analytics Database
+  # ================================================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.1
+    container_name: crypto_clickhouse
+    environment:
+      CLICKHOUSE_DB: crypto_analytics
+      CLICKHOUSE_USER: analytics_user
+      CLICKHOUSE_PASSWORD: ClickHouse2024!
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+      - ./clickhouse/config.xml:/etc/clickhouse-server/config.d/custom.xml
+      - ./clickhouse/users.xml:/etc/clickhouse-server/users.d/custom_users.xml
+      - ./sql/init-clickhouse.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "8123:8123"  # HTTP interface
+      - "9000:9000"  # Native interface
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: always
+    networks:
+      - crypto_analytics_network
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+        reservations:
+          cpus: '2.0'
+          memory: 4G
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  # ================================================================
+  # ClickHouse Web UI (Optional - برای مشاهده راحت‌تر)
+  # ================================================================
+  clickhouse-tabix:
+    image: spoonest/clickhouse-tabix-web-client:stable
+    container_name: clickhouse_ui
+    ports:
+      - "8124:80"
+    depends_on:
+      - clickhouse
+    networks:
+      - crypto_analytics_network
+    restart: always
+
+  # ================================================================
+  # PostgreSQL to ClickHouse Sync Service
+  # ================================================================
+  pg-to-clickhouse-sync:
+    build:
+      context: ./sync-service
+      dockerfile: Dockerfile
+    container_name: pg_clickhouse_sync
+    environment:
+      # PostgreSQL Source
+      PG_HOST: postgres-source
+      PG_PORT: 5432
+      PG_DATABASE: crypto_exchange
+      PG_USER: exchange_admin
+      PG_PASSWORD: Exchange2024Secure!
+      
+      # ClickHouse Target
+      CH_HOST: clickhouse
+      CH_PORT: 9000
+      CH_DATABASE: crypto_analytics
+      CH_USER: analytics_user
+      CH_PASSWORD: ClickHouse2024!
+      
+      # Sync Configuration
+      SYNC_INTERVAL: 60  # seconds
+      BATCH_SIZE: 1000
+    depends_on:
+      postgres-source:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - crypto_analytics_network
+    restart: always
+    volumes:
+      - ./sync-service:/app
+      - sync_logs:/app/logs
+
+networks:
+  crypto_analytics_network:
+    driver: bridge
+    name: crypto_analytics_net
+
+volumes:
+  postgres_exchange_data:
+  clickhouse_data:
+  clickhouse_logs:
+  sync_logs:

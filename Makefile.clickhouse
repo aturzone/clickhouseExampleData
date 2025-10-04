@@ -1,0 +1,145 @@
+# Makefile for ClickHouse Analytics Setup
+.PHONY: help setup start stop restart logs status test-pg test-ch clean
+
+.DEFAULT_GOAL := help
+
+# Colors
+GREEN := \033[0;32m
+YELLOW := \033[1;33m
+BLUE := \033[0;34m
+NC := \033[0m
+
+COMPOSE := docker-compose -f docker-compose-clickhouse.yml
+
+help: ## نمایش راهنما
+	@echo "$(BLUE)================================================================$(NC)"
+	@echo "$(GREEN)ClickHouse Analytics - دستورات موجود$(NC)"
+	@echo "$(BLUE)================================================================$(NC)"
+	@echo ""
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(YELLOW)%-20s$(NC) %s\n", $$1, $$2}'
+	@echo ""
+
+setup: ## راه‌اندازی اولیه (فقط بار اول)
+	@echo "$(GREEN)🚀 راه‌اندازی سیستم...$(NC)"
+	@chmod +x setup-clickhouse.sh
+	@./setup-clickhouse.sh
+
+start: ## شروع همه سرویس‌ها
+	@echo "$(GREEN)▶️  شروع سرویس‌ها...$(NC)"
+	@$(COMPOSE) up -d
+	@sleep 5
+	@$(MAKE) status
+
+stop: ## متوقف کردن همه سرویس‌ها
+	@echo "$(YELLOW)⏸️  متوقف کردن سرویس‌ها...$(NC)"
+	@$(COMPOSE) down
+
+restart: ## ریستارت همه سرویس‌ها
+	@$(MAKE) stop
+	@sleep 2
+	@$(MAKE) start
+
+logs: ## نمایش لاگ‌ها
+	@$(COMPOSE) logs -f
+
+logs-sync: ## نمایش لاگ‌های sync service
+	@$(COMPOSE) logs -f pg-to-clickhouse-sync
+
+logs-pg: ## نمایش لاگ‌های PostgreSQL
+	@$(COMPOSE) logs -f postgres-source
+
+logs-ch: ## نمایش لاگ‌های ClickHouse
+	@$(COMPOSE) logs -f clickhouse
+
+status: ## نمایش وضعیت سرویس‌ها
+	@echo "$(BLUE)📊 وضعیت سرویس‌ها:$(NC)"
+	@$(COMPOSE) ps
+
+test-pg: ## تست PostgreSQL
+	@echo "$(GREEN)🧪 تست PostgreSQL...$(NC)"
+	@$(COMPOSE) exec -T postgres-source psql -U exchange_admin -d crypto_exchange -c "SELECT 'PostgreSQL OK!' as status, COUNT(*) as total_transactions FROM transactions;"
+
+test-ch: ## تست ClickHouse
+	@echo "$(GREEN)🧪 تست ClickHouse...$(NC)"
+	@$(COMPOSE) exec -T clickhouse clickhouse-client --query "SELECT 'ClickHouse OK!' as status, COUNT(*) as total_transactions FROM crypto_analytics.transactions;"
+
+test: test-pg test-ch ## اجرای همه تست‌ها
+
+stats: ## نمایش آمار داده‌ها
+	@echo "$(BLUE)📈 آمار کلی:$(NC)"
+	@echo ""
+	@echo "$(YELLOW)PostgreSQL (Source):$(NC)"
+	@$(COMPOSE) exec -T postgres-source psql -U exchange_admin -d crypto_exchange -c "SELECT 'Users' as table_name, COUNT(*) as count FROM users UNION ALL SELECT 'Wallets', COUNT(*) FROM wallets UNION ALL SELECT 'Transactions', COUNT(*) FROM transactions UNION ALL SELECT 'Alerts', COUNT(*) FROM alerts ORDER BY table_name;"
+	@echo ""
+	@echo "$(YELLOW)ClickHouse (Analytics):$(NC)"
+	@$(COMPOSE) exec -T clickhouse clickhouse-client --query "SELECT 'Users' as table_name, COUNT(*) as count FROM crypto_analytics.users UNION ALL SELECT 'Transactions', COUNT(*) FROM crypto_analytics.transactions UNION ALL SELECT 'Alerts', COUNT(*) FROM crypto_analytics.alerts ORDER BY table_name FORMAT PrettyCompact;"
+
+shell-pg: ## اتصال به PostgreSQL shell
+	@$(COMPOSE) exec postgres-source psql -U exchange_admin -d crypto_exchange
+
+shell-ch: ## اتصال به ClickHouse client
+	@$(COMPOSE) exec clickhouse clickhouse-client --database crypto_analytics
+
+ui: ## باز کردن ClickHouse UI
+	@echo "$(GREEN)🎨 Opening ClickHouse UI...$(NC)"
+	@open http://localhost:8124 2>/dev/null || xdg-open http://localhost:8124 2>/dev/null || echo "$(YELLOW)باز کنید: http://localhost:8124$(NC)"
+
+restart-sync: ## ریستارت فقط sync service
+	@echo "$(YELLOW)🔄 ریستارت sync service...$(NC)"
+	@$(COMPOSE) restart pg-to-clickhouse-sync
+	@sleep 2
+	@$(MAKE) logs-sync
+
+clean: ## پاک کردن لاگ‌ها و فایل‌های موقت
+	@echo "$(YELLOW)🧹 پاکسازی...$(NC)"
+	@rm -rf sync-service/logs/*.log
+	@echo "$(GREEN)✅ لاگ‌ها پاک شدند$(NC)"
+
+clean-all: ## پاک کردن همه چیز (خطرناک!)
+	@echo "$(YELLOW)⚠️  این کار همه داده‌ها رو پاک می‌کنه!$(NC)"
+	@read -p "مطمئنید؟ [y/N] " -n 1 -r; \
+	echo; \
+	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
+		$(COMPOSE) down -v; \
+		rm -rf sync-service/logs/*; \
+		echo "$(GREEN)✅ همه چیز پاک شد$(NC)"; \
+	fi
+
+query-anomalies: ## نمایش تراکنش‌های مشکوک
+	@echo "$(BLUE)🔍 تراکنش‌های مشکوک (Risk > 70):$(NC)"
+	@$(COMPOSE) exec -T clickhouse clickhouse-client --query "SELECT transaction_id, user_id, currency, usd_amount, risk_score, flag_reason, created_at FROM crypto_analytics.transactions WHERE risk_score > 70 ORDER BY risk_score DESC LIMIT 10 FORMAT PrettyCompact;"
+
+query-hourly: ## نمایش آمار ساعتی
+	@echo "$(BLUE)📊 آمار ساعتی امروز:$(NC)"
+	@$(COMPOSE) exec -T clickhouse clickhouse-client --query "SELECT hour, total_transactions, total_volume_usd, flagged_transactions, avg_risk_score FROM crypto_analytics.hourly_metrics WHERE toDate(hour) = today() ORDER BY hour DESC FORMAT PrettyCompact;"
+
+backup-pg: ## بکاپ از PostgreSQL
+	@echo "$(GREEN)💾 ایجاد بکاپ از PostgreSQL...$(NC)"
+	@mkdir -p backups
+	@$(COMPOSE) exec -T postgres-source pg_dump -U exchange_admin crypto_exchange > backups/postgres_backup_$$(date +%Y%m%d_%H%M%S).sql
+	@echo "$(GREEN)✅ بکاپ ذخیره شد در backups/$(NC)"
+
+info: ## نمایش اطلاعات سیستم
+	@echo "$(BLUE)================================================================$(NC)"
+	@echo "$(GREEN)ℹ️  اطلاعات سیستم$(NC)"
+	@echo "$(BLUE)================================================================$(NC)"
+	@echo ""
+	@echo "$(YELLOW)نقاط دسترسی:$(NC)"
+	@echo "  • PostgreSQL:         localhost:5434"
+	@echo "  • ClickHouse HTTP:    localhost:8123"
+	@echo "  • ClickHouse Native:  localhost:9000"
+	@echo "  • ClickHouse UI:      http://localhost:8124"
+	@echo ""
+	@echo "$(YELLOW)اطلاعات ورود:$(NC)"
+	@echo "  PostgreSQL:"
+	@echo "    - User: exchange_admin"
+	@echo "    - Password: Exchange2024Secure!"
+	@echo "    - Database: crypto_exchange"
+	@echo ""
+	@echo "  ClickHouse:"
+	@echo "    - User: analytics_user"
+	@echo "    - Password: ClickHouse2024!"
+	@echo "    - Database: crypto_analytics"
+	@echo ""
+	@echo "$(GREEN)برای دیدن دستورات: make help$(NC)"
+	@echo "$(BLUE)================================================================$(NC)"

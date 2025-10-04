@@ -1,0 +1,35 @@
+<!-- clickhouse/config.xml -->
+<yandex>
+    <!-- Listen on all interfaces -->
+    <listen_host>0.0.0.0</listen_host>
+    
+    <!-- HTTP port -->
+    <http_port>8123</http_port>
+    
+    <!-- Native protocol port -->
+    <tcp_port>9000</tcp_port>
+    
+    <!-- Memory settings -->
+    <max_memory_usage>10000000000</max_memory_usage>
+    
+    <!-- Log settings -->
+    <logger>
+        <level>information</level>
+        <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+        <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>
+        <size>1000M</size>
+        <count>10</count>
+    </logger>
+    
+    <!-- Performance settings -->
+    <max_concurrent_queries>100</max_concurrent_queries>
+    <max_connections>4096</max_connections>
+    
+    <!-- Compression -->
+    <compression>
+        <case>
+            <method>zstd</method>
+            <level>3</level>
+        </case>
+    </compression>
+</yandex>
